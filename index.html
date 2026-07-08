@@ -5,165 +5,202 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Firma del Cliente</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.6/dist/signature_pad.umd.min.js"></script>
 <style>
   * { box-sizing: border-box; }
-  html, body {
-    margin: 0; padding: 0; height: 100%;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  body {
+    margin: 0;
+    padding: 16px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     background: var(--tg-theme-bg-color, #ffffff);
     color: var(--tg-theme-text-color, #222222);
-    display: flex; flex-direction: column;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
   }
-  h1 {
-    font-size: 18px;
-    text-align: center;
-    margin: 14px 10px 4px;
-  }
-  p.sub {
-    text-align: center;
-    font-size: 13px;
-    color: #777;
-    margin: 0 10px 10px;
-  }
-  #contenedor-firma {
-    flex: 1;
-    margin: 0 12px 12px;
+  h1 { font-size: 20px; margin: 4px 0; text-align: center; }
+  p.sub { margin: 0 0 12px 0; color: #888; font-size: 14px; text-align: center; }
+  #canvasWrap {
     border: 2px dashed #bbb;
-    border-radius: 10px;
-    position: relative;
-    min-height: 220px;
-    background: #fff;
-  }
-  #canvas-firma {
-    width: 100%;
-    height: 100%;
-    touch-action: none;
     border-radius: 8px;
+    width: 100%;
+    max-width: 400px;
+    touch-action: none;
   }
-  #placeholder {
-    position: absolute;
-    top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    color: #ccc;
-    font-size: 14px;
-    pointer-events: none;
+  canvas {
+    width: 100%;
+    display: block;
+    touch-action: none;
+    background: #ffffff;
+    border-radius: 6px;
   }
   .botones {
     display: flex;
     gap: 10px;
-    padding: 0 12px 16px;
+    width: 100%;
+    max-width: 400px;
+    margin-top: 16px;
   }
   button {
     flex: 1;
-    padding: 13px;
+    padding: 14px;
     border: none;
     border-radius: 8px;
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 600;
     cursor: pointer;
   }
-  #btn-limpiar {
-    background: #eee;
-    color: #444;
-  }
-  #btn-confirmar {
-    background: var(--tg-theme-button-color, #2563eb);
-    color: var(--tg-theme-button-text-color, #ffffff);
-  }
-  #btn-confirmar:disabled {
-    opacity: 0.5;
-  }
-  #aviso {
-    text-align: center;
-    font-size: 12px;
-    color: #c0392b;
-    min-height: 16px;
-    margin: 0 12px 6px;
-  }
+  #btnBorrar { background: #eee; color: #333; }
+  #btnConfirmar { background: var(--tg-theme-button-color, #2481cc); color: var(--tg-theme-button-text-color, #fff); }
+  #btnConfirmar:disabled { opacity: 0.5; }
+  #estado { margin-top: 10px; font-size: 14px; min-height: 20px; text-align: center; }
+  #estado.error { color: #d33; }
+  #estado.ok { color: #2a2; }
 </style>
 </head>
 <body>
   <h1>Firma del Cliente</h1>
   <p class="sub">Firme con el dedo dentro del recuadro</p>
 
-  <div id="contenedor-firma">
-    <canvas id="canvas-firma"></canvas>
-    <div id="placeholder">Firme aquí ✍️</div>
+  <div id="canvasWrap">
+    <canvas id="pad" width="400" height="500"></canvas>
   </div>
-
-  <div id="aviso"></div>
 
   <div class="botones">
-    <button id="btn-limpiar" type="button">Borrar</button>
-    <button id="btn-confirmar" type="button" disabled>Confirmar firma</button>
+    <button id="btnBorrar">Borrar</button>
+    <button id="btnConfirmar">Confirmar firma</button>
   </div>
 
+  <div id="estado"></div>
+
 <script>
-  const tg = window.Telegram?.WebApp;
-  if (tg) {
-    tg.ready();
-    tg.expand();
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+const canvas = document.getElementById('pad');
+const ctx = canvas.getContext('2d');
+ctx.lineWidth = 3;
+ctx.lineCap = 'round';
+ctx.lineJoin = 'round';
+ctx.strokeStyle = '#000000';
+
+// Ancho lógico fijo (400x500). El canvas se escala visualmente con CSS
+// pero los puntos que guardamos siempre están en este sistema de coordenadas,
+// así que del lado del bot sabemos exactamente cómo reconstruir el dibujo.
+const LOGICAL_W = 400;
+const LOGICAL_H = 500;
+
+let strokes = [];      // array de trazos; cada trazo es un array de [x,y]
+let currentStroke = null;
+let drawing = false;
+
+function getPos(evt) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = LOGICAL_W / rect.width;
+  const scaleY = LOGICAL_H / rect.height;
+  const point = evt.touches ? evt.touches[0] : evt;
+  const x = (point.clientX - rect.left) * scaleX;
+  const y = (point.clientY - rect.top) * scaleY;
+  return [Math.round(x), Math.round(y)];
+}
+
+function start(evt) {
+  evt.preventDefault();
+  drawing = true;
+  currentStroke = [];
+  strokes.push(currentStroke);
+  const [x, y] = getPos(evt);
+  currentStroke.push([x, y]);
+  ctx.beginPath();
+  ctx.moveTo(x * canvas.width / LOGICAL_W, y * canvas.height / LOGICAL_H);
+  setEstado('');
+}
+
+function move(evt) {
+  if (!drawing) return;
+  evt.preventDefault();
+  const [x, y] = getPos(evt);
+  currentStroke.push([x, y]);
+  ctx.lineTo(x * canvas.width / LOGICAL_W, y * canvas.height / LOGICAL_H);
+  ctx.stroke();
+}
+
+function end(evt) {
+  drawing = false;
+}
+
+canvas.addEventListener('mousedown', start);
+canvas.addEventListener('mousemove', move);
+window.addEventListener('mouseup', end);
+canvas.addEventListener('touchstart', start, { passive: false });
+canvas.addEventListener('touchmove', move, { passive: false });
+canvas.addEventListener('touchend', end);
+
+document.getElementById('btnBorrar').addEventListener('click', () => {
+  strokes = [];
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  setEstado('');
+});
+
+function setEstado(msg, tipo) {
+  const el = document.getElementById('estado');
+  el.textContent = msg;
+  el.className = tipo || '';
+}
+
+// Codifica los trazos en un string compacto: "W,H|x,y;x,y;...|x,y;x,y;..."
+// (mucho más liviano que JSON: sin comillas ni llaves)
+function codificar(strokesData) {
+  const cuerpo = strokesData
+    .filter(s => s.length > 0)
+    .map(s => s.map(p => p[0] + ',' + p[1]).join(';'))
+    .join('|');
+  return LOGICAL_W + ',' + LOGICAL_H + '|' + cuerpo;
+}
+
+// Si el resultado pesa más de ~4000 bytes (límite de Telegram = 4096),
+// vamos reduciendo puntos (nos quedamos con 1 de cada N) hasta que quepa.
+function codificarConLimite(strokesData, limiteBytes) {
+  let paso = 1;
+  while (paso <= 20) {
+    const reducidos = strokesData.map(s =>
+      paso === 1 ? s : s.filter((_, i) => i % paso === 0 || i === s.length - 1)
+    );
+    const texto = codificar(reducidos);
+    if (new TextEncoder().encode(texto).length <= limiteBytes) {
+      return texto;
+    }
+    paso++;
+  }
+  // último recurso: solo los puntos extremos de cada trazo
+  const minimos = strokesData.map(s => [s[0], s[s.length - 1]]);
+  return codificar(minimos);
+}
+
+document.getElementById('btnConfirmar').addEventListener('click', () => {
+  const trazosValidos = strokes.filter(s => s.length > 0);
+  if (trazosValidos.length === 0) {
+    setEstado('Por favor firme antes de confirmar.', 'error');
+    return;
   }
 
-  const canvas = document.getElementById('canvas-firma');
-  const placeholder = document.getElementById('placeholder');
-  const avisoEl = document.getElementById('aviso');
-  const btnLimpiar = document.getElementById('btn-limpiar');
-  const btnConfirmar = document.getElementById('btn-confirmar');
+  const texto = codificarConLimite(trazosValidos, 4000);
 
-  function ajustarCanvas() {
-    const ratio = Math.max(window.devicePixelRatio || 1, 1);
-    const contenedor = document.getElementById('contenedor-firma');
-    canvas.width = contenedor.clientWidth * ratio;
-    canvas.height = contenedor.clientHeight * ratio;
-    canvas.getContext('2d').scale(ratio, ratio);
-    firmaPad.clear();
+  if (!tg) {
+    setEstado('Esta página debe abrirse dentro de Telegram.', 'error');
+    return;
   }
 
-  const firmaPad = new SignaturePad(canvas, {
-    backgroundColor: 'rgba(255,255,255,1)',
-    penColor: '#111111',
-    minWidth: 1.2,
-    maxWidth: 2.6,
-  });
-
-  firmaPad.addEventListener('beginStroke', () => {
-    placeholder.style.display = 'none';
-  });
-  firmaPad.addEventListener('endStroke', () => {
-    btnConfirmar.disabled = firmaPad.isEmpty();
-  });
-
-  window.addEventListener('resize', ajustarCanvas);
-  ajustarCanvas();
-
-  btnLimpiar.addEventListener('click', () => {
-    firmaPad.clear();
-    placeholder.style.display = 'block';
-    btnConfirmar.disabled = true;
-    avisoEl.textContent = '';
-  });
-
-  btnConfirmar.addEventListener('click', () => {
-    if (firmaPad.isEmpty()) {
-      avisoEl.textContent = 'Debe firmar antes de confirmar.';
-      return;
-    }
-    const dataUrl = firmaPad.toDataURL('image/png');
-    const base64 = dataUrl.split(',')[1];
-
-    if (!tg) {
-      avisoEl.textContent = 'Esta página debe abrirse desde el bot de Telegram.';
-      return;
-    }
-    try {
-      tg.sendData(JSON.stringify({ tipo: 'firma_cliente', imagen_base64: base64 }));
-      tg.close();
-    } catch (e) {
-      avisoEl.textContent = 'No se pudo enviar la firma. Intente de nuevo.';
-    }
-  });
+  try {
+    tg.sendData(texto);
+    setEstado('Firma enviada ✅', 'ok');
+    // Telegram cierra la Mini App automáticamente tras sendData(),
+    // pero por si acaso lo forzamos también:
+    setTimeout(() => tg.close(), 300);
+  } catch (err) {
+    setEstado('No se pudo enviar la firma. Intente de nuevo.', 'error');
+  }
+});
 </script>
 </body>
 </html>
