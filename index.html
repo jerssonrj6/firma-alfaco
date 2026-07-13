@@ -158,8 +158,8 @@ function codificar(strokesData) {
   return LOGICAL_W + ',' + LOGICAL_H + '|' + cuerpo;
 }
 
-// Si el resultado pesa más de ~4000 bytes (límite de Telegram = 4096),
-// vamos reduciendo puntos (nos quedamos con 1 de cada N) hasta que quepa.
+// Si el resultado pesa más que el presupuesto de bytes disponible, vamos
+// reduciendo puntos (nos quedamos con 1 de cada N) hasta que quepa.
 function codificarConLimite(strokesData, limiteBytes) {
   let paso = 1;
   while (paso <= 20) {
@@ -184,15 +184,28 @@ document.getElementById('btnConfirmar').addEventListener('click', () => {
     return;
   }
 
-  const texto = codificarConLimite(trazosValidos, 4000);
-
   if (!tg) {
     setEstado('Esta página debe abrirse dentro de Telegram.', 'error');
     return;
   }
 
+  // El bot valida el hash de initData (firmado por Telegram con el token
+  // del bot) para confirmar que la firma realmente vino de esta Mini App
+  // y no de un mensaje falsificado. Necesitamos mandarlo junto con los
+  // trazos, así que el límite de 4096 bytes de sendData() ahora se reparte
+  // entre initData y los trazos (antes todo el presupuesto era para los
+  // trazos).
+  const initData = tg.initData || '';
+  const SOBRE_LIMITE = 4096;
+  const MARGEN_SEGURIDAD = 60; // comillas, llaves y claves del JSON
+  const overheadJSON = JSON.stringify({ init_data: initData, trazos: '' }).length;
+  const presupuestoTrazos = Math.max(500, SOBRE_LIMITE - overheadJSON - MARGEN_SEGURIDAD);
+
+  const texto = codificarConLimite(trazosValidos, presupuestoTrazos);
+  const payload = JSON.stringify({ init_data: initData, trazos: texto });
+
   try {
-    tg.sendData(texto);
+    tg.sendData(payload);
     setEstado('Firma enviada ✅', 'ok');
     // Telegram cierra la Mini App automáticamente tras sendData(),
     // pero por si acaso lo forzamos también:
